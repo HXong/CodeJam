@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { loadConfig } from "./config.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { WorkspaceGuard } from "./workspace-guard.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -51,12 +52,154 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     new JsonStore(path.join(root, "data", "db.json")),
     new WorkspaceManager(path.join(root, "workspaces")),
     runner,
+    new WorkspaceGuard(path.join(root, "data", "safecommit")),
   );
   await service.initialize();
   return service;
 }
 
 describe("Agent lifecycle", () => {
+  it("rolls back workspace changes when a run fails", async () => {
+    const runner: AgentRunner = {
+      async run(request) {
+	await writeFile(
+	  path.join(
+	    request.workspacePath,
+	    "existing.txt",
+	  ),
+	  "broken\n",
+	  "utf8",
+	);
+
+	await writeFile(
+	  path.join(
+	    request.workspacePath,
+	    "partial.txt",
+	  ),
+	  "partial agent output\n",
+	  "utf8",
+	);
+
+	throw new Error("simulated runner failure");
+      },
+
+      async cancel() {
+	return false;
+      },
+
+      async isAvailable() {
+	return true;
+      },
+    };
+
+    const service = await makeService(runner);
+
+    const agent = await service.createAgent({
+      name: "Recovery Test",
+    });
+
+    await writeFile(
+      path.join(
+	agent.workspacePath,
+	"existing.txt",
+      ),
+      "stable\n",
+      "utf8",
+    );
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "break the workspace",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("failed");
+
+    expect(
+      await readFile(
+	path.join(
+	  agent.workspacePath,
+	  "existing.txt",
+	),
+	"utf8",
+      ),
+    ).toBe("stable\n");
+
+    await expect(
+      access(
+	path.join(
+	  agent.workspacePath,
+	  "partial.txt",
+	),
+      ),
+    ).rejects.toThrow();
+
+    expect(
+      service.getAgent(agent.id).status,
+    ).toBe("ready");
+
+    expect(
+      service.getRun(run.id).error,
+    ).toContain(
+      "workspace rolled back to checkpoint",
+    );
+  });
+
+  it("keeps workspace changes when a run succeeds", async () => {
+    const runner: AgentRunner = {
+      async run(request) {
+	await writeFile(
+	  path.join(
+	    request.workspacePath,
+	    "success.txt",
+	  ),
+	  "agent result\n",
+	  "utf8",
+	);
+
+	return {
+	  output: "completed successfully",
+	  threadId: "success-thread",
+	  usage: null,
+	};
+      },
+
+      async cancel() {
+	return false;
+      },
+
+      async isAvailable() {
+	return true;
+      },
+    };
+
+    const service = await makeService(runner);
+
+    const agent = await service.createAgent({
+      name: "Success Test",
+    });
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "make a successful change",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("completed");
+
+    expect(
+      await readFile(
+	path.join(
+	  agent.workspacePath,
+	  "success.txt",
+	),
+	"utf8",
+      ),
+    ).toBe("agent result\n");
+  });
+
   it("creates, updates, stops, starts and deletes an Agent", async () => {
     const service = await makeService();
     const agent = await service.createAgent({ name: "Builder" });

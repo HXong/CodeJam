@@ -5,14 +5,16 @@ import { loadConfig, writeCodexConfig } from "./config.js";
 import { createRunner } from "./runner-factory.js";
 import { JsonStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
+import { WorkspaceGuard } from "./workspace-guard.js";
 
 const config = loadConfig();
 await writeCodexConfig(config);
 
 const store = new JsonStore(path.join(config.dataDirectory, "launchpad.json"));
 const workspaces = new WorkspaceManager(config.workspaceRoot);
+const workspaceGuard = new WorkspaceGuard(path.join(config.dataDirectory, "safecommit"));
 const runner = createRunner(config);
-const service = new AgentService(config, store, workspaces, runner);
+const service = new AgentService(config, store, workspaces, runner, workspaceGuard);
 await service.initialize();
 
 const app = await createApp(config, service);

@@ -12,6 +12,7 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
+import { WorkspaceGuard, type WorkspaceCheckpoint } from "./workspace-guard.js";
 
 const now = () => new Date().toISOString();
 
@@ -24,11 +25,13 @@ export class AgentService {
     private readonly store: JsonStore,
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
+    private readonly workspaceGuard: WorkspaceGuard,
   ) {}
 
   async initialize(): Promise<void> {
     await this.store.initialize();
     await this.workspaces.initialize();
+    await this.workspaceGuard.initialize();
     await this.store.mutate((database) => {
       for (const run of database.runs) {
         if (run.status === "queued" || run.status === "running") {
@@ -240,10 +243,19 @@ export class AgentService {
         storedRun.startedAt = now();
       }
     });
+
+    let checkpoint: WorkspaceCheckpoint | null = null;
+
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
         throw new RunCancelledError();
       }
+
+      checkpoint = await this.workspaceGuard.checkpoint(agentAtStart.id, run.id, agentAtStart.workspacePath);
+      if(this.cancellationRequests.has(agentAtStart.id)){
+	throw new RunCancelledError();
+      }
+
       const result = await this.runner.run({
         agentId: agentAtStart.id,
         workspacePath: agentAtStart.workspacePath,
@@ -275,7 +287,43 @@ export class AgentService {
     } catch (error) {
       const completedAt = now();
       const cancelled = error instanceof RunCancelledError;
-      const message = error instanceof Error ? error.message : String(error);
+      const originalMessage = error instanceof Error ? error.message : String(error);
+
+      let rollbackSucceeded = false;
+      let rollbackError: Error | null = null;
+
+      // If a checkpoint exists, the Agent may have already modified
+      // persistent state. Restore it before finalising the failed Run.
+      if (checkpoint) {
+	try {
+	  await this.workspaceGuard.rollback(
+	    agentAtStart.id,
+	    agentAtStart.workspacePath,
+	    checkpoint,
+	  );
+
+	  rollbackSucceeded = true;
+	} catch (error) {
+	  rollbackError =
+	    error instanceof Error
+	      ? error
+	      : new Error(String(error));
+	}
+      }
+
+      let message = originalMessage;
+
+      if (rollbackSucceeded && checkpoint) {
+	message +=
+	  `; workspace rolled back to checkpoint ` +
+	  checkpoint.commitSha.slice(0, 8);
+      }
+
+      if (rollbackError) {
+	message +=
+	  `; SafeCommit rollback failed: ` +
+	  rollbackError.message;
+      }
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
         const agent = database.agents.find((item) => item.id === agentAtStart.id);
@@ -286,7 +334,7 @@ export class AgentService {
         }
         if (agent) {
           if (agent.status !== "stopped") {
-            agent.status = cancelled ? "ready" : "error";
+            agent.status = cancelled || rollbackSucceeded ? "ready" : "error";
           }
           agent.lastError = cancelled ? null : message;
           agent.updatedAt = completedAt;
