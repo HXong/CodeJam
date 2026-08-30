@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentService } from "./agent-service.js";
 import { loadConfig } from "./config.js";
+import { RunCancelledError } from "./errors.js";
 import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -59,6 +60,70 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("rolls back workspace changes when a run is cancelled", async () => {
+    let rejectRun!: (error: Error) => void;
+
+    const pending = new Promise<RunnerResult>((_, reject) => {
+      rejectRun = reject;
+    });
+
+    const runner: AgentRunner = {
+      async run(request) {
+	await writeFile(
+	  path.join(request.workspacePath, "cancelled.txt"),
+	  "partial work\n",
+	  "utf8",
+	);
+
+	return pending;
+      },
+
+      async cancel() {
+	rejectRun(new RunCancelledError());
+	return true;
+      },
+
+      async isAvailable() {
+	return true;
+      },
+    };
+
+    const service = await makeService(runner);
+
+    const agent = await service.createAgent({
+      name: "Cancellation Test",
+    });
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "make a change",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("running");
+
+    await service.stopAgent(agent.id);
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("cancelled");
+
+    await expect(
+      access(
+	path.join(
+	  agent.workspacePath,
+	  "cancelled.txt",
+	),
+      ),
+    ).rejects.toThrow();
+
+    expect(
+      service.getAgent(agent.id).status,
+    ).toBe("stopped");
+  });
+
+
   it("rolls back workspace changes when a run fails", async () => {
     const runner: AgentRunner = {
       async run(request) {
