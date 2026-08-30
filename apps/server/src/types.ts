@@ -1,3 +1,5 @@
+import type { ChangeRiskAssessment } from "./change-risk-engine.js";
+
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 export type MessageRole = "user" | "assistant";
@@ -38,6 +40,7 @@ export interface AgentRun {
   output: string | null;
   error: string | null;
   usage: RunUsage | null;
+  riskAssessment?: ChangeRiskAssessment | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

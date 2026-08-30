@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { WorkspaceGuard, type WorkspaceCheckpoint } from "./workspace-guard.js";
+import { assessChangeRisk } from "./change-risk-engine.js";
 
 const now = () => new Date().toISOString();
 
@@ -173,6 +174,7 @@ export class AgentService {
       output: null,
       error: null,
       usage: null,
+      riskAssessment: null,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
@@ -262,6 +264,22 @@ export class AgentService {
         prompt: run.prompt,
         threadId: agentAtStart.codexThreadId,
       });
+
+      //SafeCommit analysis stage - compare post agent workspace against the checkpoint created immediately before execution, then classifying the result
+      if (!checkpoint) {
+	throw new Error(
+	  "SafeCommit checkpoint is unavailable after Agent execution",
+	);
+      }
+
+      const changedFiles = await this.workspaceGuard.changedFiles(
+	agentAtStart.id,
+	agentAtStart.workspacePath,
+	checkpoint,
+      );
+
+      const riskAssessment = assessChangeRisk(changedFiles);
+
       const completedAt = now();
       await this.store.mutate((database) => {
         const storedRun = database.runs.find((item) => item.id === run.id);
@@ -270,6 +288,7 @@ export class AgentService {
         storedRun.status = "completed";
         storedRun.output = result.output;
         storedRun.usage = result.usage;
+	storedRun.riskAssessment = riskAssessment;
         storedRun.completedAt = completedAt;
         database.messages.push({
           id: randomUUID(),

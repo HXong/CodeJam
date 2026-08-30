@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -60,6 +60,74 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
 }
 
 describe("Agent lifecycle", () => {
+  it("records a risk assessment for a successful Agent change", async () => {
+    const runner: AgentRunner = {
+      async run(request) {
+	const authDirectory = path.join(
+	  request.workspacePath,
+	  "src",
+	  "auth",
+	);
+
+	await mkdir(authDirectory, {
+	  recursive: true,
+	});
+
+	await writeFile(
+	  path.join(authDirectory, "token.ts"),
+	  "export const validateToken = () => true;\n",
+	  "utf8",
+	);
+
+	return {
+	  output: "updated authentication code",
+	  threadId: "risk-thread",
+	  usage: null,
+	};
+      },
+
+      async cancel() {
+	return false;
+      },
+
+      async isAvailable() {
+	return true;
+      },
+    };
+
+    const service = await makeService(runner);
+
+    const agent = await service.createAgent({
+      name: "Risk Test",
+    });
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "modify authentication",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("completed");
+
+    const completedRun = service.getRun(run.id);
+
+    expect(completedRun.riskAssessment).toBeDefined();
+
+    expect(
+      completedRun.riskAssessment?.level,
+    ).toBe("high");
+
+    expect(
+      completedRun.riskAssessment?.changedFiles,
+    ).toContain("src/auth/token.ts");
+
+    expect(
+      completedRun.riskAssessment?.features
+	.securitySensitiveChanged,
+    ).toBe(true);
+  });
+
   it("rolls back workspace changes when a run is cancelled", async () => {
     let rejectRun!: (error: Error) => void;
 
