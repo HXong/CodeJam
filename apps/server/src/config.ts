@@ -25,6 +25,8 @@ const envSchema = z.object({
     .default("2g"),
   CONTAINER_PIDS_LIMIT: z.coerce.number().int().positive().default(256),
   CONTAINER_USER: z.string().optional(),
+  SAFECOMMIT_VERIFY_TIMEOUT_MS: z.coerce.number().int().min(1_000).default(120_000),
+  SAFECOMMIT_VERIFY_MAX_OUTPUT_BYTES: z.coerce.number().int().min(16_384).default(262_144),
   RUNTIME_INSTANCE_ID: z
     .string()
     .trim()
@@ -82,6 +84,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     containerMemoryLimit: env.CONTAINER_MEMORY_LIMIT,
     containerPidsLimit: env.CONTAINER_PIDS_LIMIT,
     containerUser: env.CONTAINER_USER?.trim() || defaultContainerUser,
+    safeCommitVerifyTimeoutMs: env.SAFECOMMIT_VERIFY_TIMEOUT_MS,
+    safeCommitVerifyMaxOutputBytes: env.SAFECOMMIT_VERIFY_MAX_OUTPUT_BYTES,
     runtimeInstanceId: env.RUNTIME_INSTANCE_ID,
     authToken,
     arkApiKey: env.ARK_API_KEY?.trim() ?? "",
