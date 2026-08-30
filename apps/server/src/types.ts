@@ -1,4 +1,6 @@
 import type { ChangeRiskAssessment } from "./change-risk-engine.js";
+import type { VerificationPlan } from "./verification-policy.js";
+import type { VerificationResult } from "./container-verifier.js";
 
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -41,6 +43,8 @@ export interface AgentRun {
   error: string | null;
   usage: RunUsage | null;
   riskAssessment?: ChangeRiskAssessment | null;
+  verificationPlan?: VerificationPlan | null;
+  verificationResult?: VerificationResult | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

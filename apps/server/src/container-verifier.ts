@@ -15,6 +15,13 @@ export type VerificationStatus =
   | "blocked"
   | "error";
 
+export interface VerificationExecutor {
+  verify(
+    workspacePath: string,
+    plan: VerificationPlan,
+  ): Promise<VerificationResult>;
+}
+  
 export interface VerificationCheckResult {
   check: VerificationCheck;
   status: "passed" | "failed" | "error";
@@ -127,7 +134,7 @@ export function buildVerifierRunArgs(
   ];
 }
 
-export class ContainerVerifier {
+export class ContainerVerifier implements VerificationExecutor {
   constructor(private readonly config: AppConfig) {}
 
   async verify(

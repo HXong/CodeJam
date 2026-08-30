@@ -12,8 +12,25 @@ import type {
   UpdateAgentInput,
 } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
-import { WorkspaceGuard, type WorkspaceCheckpoint } from "./workspace-guard.js";
-import { assessChangeRisk } from "./change-risk-engine.js";
+import { WorkspaceGuard, 
+	type WorkspaceCheckpoint, 
+} from "./workspace-guard.js";
+import { assessChangeRisk, 
+	type ChangeRiskAssessment, 
+} from "./change-risk-engine.js";
+import {
+  type VerificationExecutor,
+  type VerificationResult,
+} from "./container-verifier.js";
+
+import {
+  detectProjectCapabilities,
+} from "./project-capabilities.js";
+
+import {
+  planVerification,
+  type VerificationPlan,
+} from "./verification-policy.js";
 
 const now = () => new Date().toISOString();
 
@@ -27,6 +44,7 @@ export class AgentService {
     private readonly workspaces: WorkspaceManager,
     private readonly runner: AgentRunner,
     private readonly workspaceGuard: WorkspaceGuard,
+    private readonly verifier: VerificationExecutor,
   ) {}
 
   async initialize(): Promise<void> {
@@ -175,6 +193,8 @@ export class AgentService {
       error: null,
       usage: null,
       riskAssessment: null,
+      verificationPlan: null,
+      verificationResult: null,
       startedAt: null,
       completedAt: null,
       createdAt: timestamp,
@@ -247,6 +267,9 @@ export class AgentService {
     });
 
     let checkpoint: WorkspaceCheckpoint | null = null;
+    let riskAssessment: ChangeRiskAssessment | null = null;
+    let verificationPlan: VerificationPlan | null = null;
+    let verificationResult: VerificationResult | null = null;
 
     try {
       if (this.cancellationRequests.has(agentAtStart.id)) {
@@ -278,7 +301,40 @@ export class AgentService {
 	checkpoint,
       );
 
-      const riskAssessment = assessChangeRisk(changedFiles);
+      riskAssessment = assessChangeRisk(changedFiles);
+
+      const capabilities =
+	await detectProjectCapabilities(
+	  agentAtStart.workspacePath,
+	);
+
+      verificationPlan =
+	planVerification(
+	  riskAssessment,
+	  capabilities,
+	);
+
+      verificationResult =
+	await this.verifier.verify(
+	  agentAtStart.workspacePath,
+	  verificationPlan,
+	);
+
+      if (!verificationResult.passed) {
+	const failedChecks =
+	  verificationResult.checks
+	  .filter((check) => check.status !== "passed")
+	  .map((check) => check.check);
+
+	const detail =
+	  failedChecks.length > 0
+	    ? `failed checks: ${failedChecks.join(", ")}`
+	    : verificationResult.status;
+
+	throw new Error(
+	  `SafeCommit verification rejected the Agent change: ${detail}`,
+	);
+      }
 
       const completedAt = now();
       await this.store.mutate((database) => {
@@ -289,6 +345,8 @@ export class AgentService {
         storedRun.output = result.output;
         storedRun.usage = result.usage;
 	storedRun.riskAssessment = riskAssessment;
+	storedRun.verificationPlan = verificationPlan;
+	storedRun.verificationResult = verificationResult;
         storedRun.completedAt = completedAt;
         database.messages.push({
           id: randomUUID(),
@@ -349,6 +407,9 @@ export class AgentService {
         if (storedRun) {
           storedRun.status = cancelled ? "cancelled" : "failed";
           storedRun.error = message;
+	  storedRun.riskAssessment = riskAssessment;
+          storedRun.verificationPlan = verificationPlan;
+          storedRun.verificationResult = verificationResult;
           storedRun.completedAt = completedAt;
         }
         if (agent) {

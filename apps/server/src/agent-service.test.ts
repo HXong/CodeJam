@@ -9,6 +9,8 @@ import { JsonStore } from "./store.js";
 import type { AgentRunner, RunnerRequest, RunnerResult } from "./types.js";
 import { WorkspaceManager } from "./workspace.js";
 import { WorkspaceGuard } from "./workspace-guard.js";
+import { type VerificationExecutor, type VerificationResult } from "./container-verifier.js";
+import { type VerificationPlan } from "./verification-policy.js";
 
 class FakeRunner implements AgentRunner {
   async run(request: RunnerRequest): Promise<RunnerResult> {
@@ -26,6 +28,32 @@ class FakeRunner implements AgentRunner {
   }
 }
 
+class FakeVerifier implements VerificationExecutor {
+  async verify(
+    _workspacePath: string,
+    plan: VerificationPlan,
+  ): Promise<VerificationResult> {
+    return {
+      status:
+        plan.checks.length === 0
+          ? "skipped"
+          : "passed",
+
+      passed: true,
+
+      checks: plan.checks.map((check) => ({
+        check,
+        status: "passed",
+        exitCode: 0,
+        durationMs: 1,
+        output: "fake verification passed",
+      })),
+
+      totalDurationMs: plan.checks.length,
+    };
+  }
+}
+
 const temporaryDirectories: string[] = [];
 
 afterEach(async () => {
@@ -37,7 +65,10 @@ afterEach(async () => {
   );
 });
 
-async function makeService(runner: AgentRunner = new FakeRunner()): Promise<AgentService> {
+async function makeService(
+	runner: AgentRunner = new FakeRunner(),
+	verifier: VerificationExecutor = new FakeVerifier(),
+): Promise<AgentService> {
   const root = await mkdtemp(path.join(tmpdir(), "launchpad-test-"));
   temporaryDirectories.push(root);
   const config = loadConfig({
@@ -54,6 +85,7 @@ async function makeService(runner: AgentRunner = new FakeRunner()): Promise<Agen
     new WorkspaceManager(path.join(root, "workspaces")),
     runner,
     new WorkspaceGuard(path.join(root, "data", "safecommit")),
+    verifier,
   );
   await service.initialize();
   return service;
@@ -405,5 +437,319 @@ describe("Agent lifecycle", () => {
 
     finish({ output: "done", threadId: "thread", usage: null });
     await expect.poll(() => service.getRun(run.id).status).toBe("completed");
+  });
+
+  it("uses structural-only verification for low-risk changes", async () => {
+    const runner: AgentRunner = {
+      async run(request) {
+	await writeFile(
+	  path.join(request.workspacePath, "README.md"),
+	  "# Updated documentation\n",
+	  "utf8",
+	);
+
+	return {
+	  output: "updated documentation",
+	  threadId: "low-risk-thread",
+	  usage: null,
+	};
+      },
+
+      async cancel() {
+	return false;
+      },
+
+      async isAvailable() {
+	return true;
+      },
+    };
+
+    const service = await makeService(runner);
+
+    const agent = await service.createAgent({
+      name: "Low Risk Test",
+    });
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "update the documentation",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("completed");
+
+    const completedRun = service.getRun(run.id);
+
+    expect(completedRun.riskAssessment?.level)
+      .toBe("low");
+
+    expect(completedRun.verificationPlan?.checks)
+      .toEqual([]);
+
+    expect(completedRun.verificationPlan?.structuralOnly)
+      .toBe(true);
+
+    expect(completedRun.verificationResult?.status)
+      .toBe("skipped");
+
+    expect(completedRun.verificationResult?.passed)
+      .toBe(true);
+  });
+
+  it("routes medium-risk source changes to targeted test verification", async () => {
+    const runner: AgentRunner = {
+      async run(request) {
+	const sourceDirectory = path.join(
+	  request.workspacePath,
+	  "src",
+	);
+
+	await mkdir(sourceDirectory, {
+	  recursive: true,
+	});
+
+	await writeFile(
+	  path.join(sourceDirectory, "greeting.ts"),
+	  'export const greeting = "hello";\n',
+	  "utf8",
+	);
+
+	return {
+	  output: "updated source code",
+	  threadId: "medium-risk-thread",
+	  usage: null,
+	};
+      },
+
+      async cancel() {
+	return false;
+      },
+
+      async isAvailable() {
+	return true;
+      },
+    };
+
+    const service = await makeService(runner);
+
+    const agent = await service.createAgent({
+      name: "Medium Risk Test",
+    });
+
+    // Pre-existing project capability: this belongs to the
+    // checkpoint and is not an Agent mutation.
+    await writeFile(
+      path.join(agent.workspacePath, "package.json"),
+      JSON.stringify(
+	{
+	  scripts: {
+	    test: "vitest run",
+	    typecheck: "tsc --noEmit",
+	    build: "tsc",
+	  },
+	},
+	null,
+	2,
+      ),
+      "utf8",
+    );
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "change normal application logic",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("completed");
+
+    const completedRun = service.getRun(run.id);
+
+    expect(completedRun.riskAssessment?.level)
+      .toBe("medium");
+
+    expect(completedRun.verificationPlan?.checks)
+      .toEqual(["test"]);
+
+    expect(completedRun.verificationResult?.status)
+      .toBe("passed");
+
+    expect(completedRun.verificationResult?.checks)
+      .toHaveLength(1);
+
+    expect(
+      completedRun.verificationResult?.checks[0],
+    ).toMatchObject({
+      check: "test",
+      status: "passed",
+    });
+  });
+
+  it("rolls back a high-risk change when verification fails", async () => {
+    let receivedPlan: VerificationPlan | null = null;
+
+    const failingVerifier: VerificationExecutor = {
+      async verify(
+	_workspacePath,
+	plan,
+      ): Promise<VerificationResult> {
+	receivedPlan = plan;
+
+	return {
+	  status: "failed",
+	  passed: false,
+	  checks: [
+	    {
+	      check: "typecheck",
+	      status: "passed",
+	      exitCode: 0,
+	      durationMs: 1,
+	      output: "typecheck passed",
+	    },
+	    {
+	      check: "test",
+	      status: "failed",
+	      exitCode: 1,
+	      durationMs: 2,
+	      output: "authentication test failed",
+	    },
+	  ],
+	  totalDurationMs: 3,
+	};
+      },
+    };
+
+    const runner: AgentRunner = {
+      async run(request) {
+	const authDirectory = path.join(
+	  request.workspacePath,
+	  "src",
+	  "auth",
+	);
+
+	await mkdir(authDirectory, {
+	  recursive: true,
+	});
+
+	await writeFile(
+	  path.join(authDirectory, "token.ts"),
+	  "export const validateToken = () => true;\n",
+	  "utf8",
+	);
+
+	return {
+	  output: "changed authentication",
+	  threadId: "high-risk-thread",
+	  usage: null,
+	};
+      },
+
+      async cancel() {
+	return false;
+      },
+
+      async isAvailable() {
+	return true;
+      },
+    };
+
+    const service = await makeService(
+      runner,
+      failingVerifier,
+    );
+
+    const agent = await service.createAgent({
+      name: "High Risk Test",
+    });
+
+    await writeFile(
+      path.join(agent.workspacePath, "package.json"),
+      JSON.stringify(
+	{
+	  scripts: {
+	    typecheck: "tsc --noEmit",
+	    test: "vitest run",
+	    build: "tsc",
+	  },
+	},
+	null,
+	2,
+      ),
+      "utf8",
+    );
+
+    const { run } = await service.sendMessage(
+      agent.id,
+      "modify authentication",
+    );
+
+    await expect
+      .poll(() => service.getRun(run.id).status)
+      .toBe("failed");
+
+    const failedRun = service.getRun(run.id);
+
+    expect(failedRun.riskAssessment?.level)
+      .toBe("high");
+
+    expect(receivedPlan?.checks).toEqual([
+      "typecheck",
+      "test",
+      "build",
+    ]);
+
+    expect(failedRun.verificationPlan?.checks)
+      .toEqual([
+	"typecheck",
+	"test",
+	"build",
+      ]);
+
+    expect(failedRun.verificationResult?.status)
+      .toBe("failed");
+
+    expect(failedRun.verificationResult?.checks)
+      .toHaveLength(2);
+
+    expect(
+      failedRun.verificationResult?.checks[1],
+    ).toMatchObject({
+      check: "test",
+      status: "failed",
+    });
+
+    // Candidate authentication file must have been rolled back.
+    await expect(
+      access(
+	path.join(
+	  agent.workspacePath,
+	  "src",
+	  "auth",
+	  "token.ts",
+	),
+      ),
+    ).rejects.toThrow();
+
+    // The pre-run project state must survive rollback.
+    expect(
+      await readFile(
+	path.join(agent.workspacePath, "package.json"),
+	"utf8",
+      ),
+    ).toContain('"test": "vitest run"');
+
+    expect(service.getAgent(agent.id).status)
+      .toBe("ready");
+
+    expect(failedRun.error)
+      .toContain(
+	"SafeCommit verification rejected the Agent change",
+      );
+
+    expect(failedRun.error)
+      .toContain(
+	"workspace rolled back to checkpoint",
+      );
   });
 });
