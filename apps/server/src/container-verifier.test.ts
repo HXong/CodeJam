@@ -109,13 +109,17 @@ describe("ContainerVerifier", () => {
     expect(args).toContain("ALL");
     expect(args).toContain("--read-only");
     expect(args).toContain(
-      "type=bind,src=/tmp/workspace,dst=/workspace",
+      "type=bind,src=/tmp/workspace,dst=/workspace-src,readonly",
     );
+    expect(args).toContain(
+      "/workspace:rw,nosuid,nodev,size=1g",
+    );
+
     expect(args).toContain("runtime:test");
 
-    expect(
-      args.slice(-3),
-    ).toEqual(["npm", "run", "test"]);
+    expect(args).toContain("sh");
+    expect(args.at(-2)).toBe("-lc");
+    expect(args.at(-1)).toContain("npm run test");
 
     expect(args).not.toContain("ARK_API_KEY");
     expect(args).not.toContain("totally-real-api-key");

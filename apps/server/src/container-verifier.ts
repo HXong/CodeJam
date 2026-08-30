@@ -102,16 +102,28 @@ export function buildVerifierRunArgs(
     `io.codejam.instance-id=${config.runtimeInstanceId}`,
 
     "--mount",
-    `type=bind,src=${workspacePath},dst=/workspace`,
+    `type=bind,src=${workspacePath},dst=/workspace-src,readonly`,
+
+    "--tmpfs",
+    "/workspace:rw,nosuid,nodev,size=1g",
 
     "--workdir",
     "/workspace",
 
     config.containerRuntimeImage,
 
-    "npm",
-    "run",
-    check,
+    "sh",
+    "-lc",
+    [
+      // Copy the candidate workspace but avoid duplicating a potentially
+      // huge node_modules tree.
+      "find /workspace-src -mindepth 1 -maxdepth 1 ! -name node_modules -exec cp -a -t /workspace {} +",
+
+      // Dependencies remain available but read-only through the source mount.
+      "if [ -d /workspace-src/node_modules ]; then ln -s /workspace-src/node_modules /workspace/node_modules; fi",
+
+      `npm run ${check}`,
+    ].join(" && "),
   ];
 }
 
