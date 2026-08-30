@@ -91,7 +91,7 @@ export function buildVerifierRunArgs(
 
     // npm and tools still need a temporary writable location.
     "--tmpfs",
-    "/tmp:rw,nosuid,nodev,size=64m",
+    "/tmp:rw,nosuid,nodev,size=64m,mode=1777",
 
     "--env",
     "HOME=/tmp",
@@ -112,7 +112,7 @@ export function buildVerifierRunArgs(
     `type=bind,src=${workspacePath},dst=/workspace-src,readonly`,
 
     "--tmpfs",
-    "/workspace:rw,nosuid,nodev,size=1g",
+    "/workspace:rw,nosuid,nodev,size=1g,mode=1777",
 
     "--workdir",
     "/workspace",

@@ -1,4 +1,5 @@
 import {
+  access,
   chmod,
   mkdtemp,
   rm,
@@ -85,6 +86,11 @@ async function fakeEngine(
   return executable;
 }
 
+const realContainerIt =
+  process.env.RUN_SAFECOMMIT_CONTAINER_TEST === "1"
+    ? it
+    : it.skip;
+
 describe("ContainerVerifier", () => {
   it("builds a credential-free network-isolated invocation", () => {
     const config = loadConfig({
@@ -112,7 +118,7 @@ describe("ContainerVerifier", () => {
       "type=bind,src=/tmp/workspace,dst=/workspace-src,readonly",
     );
     expect(args).toContain(
-      "/workspace:rw,nosuid,nodev,size=1g",
+      "/workspace:rw,nosuid,nodev,size=1g,mode=1777",
     );
 
     expect(args).toContain("runtime:test");
@@ -240,4 +246,68 @@ describe("ContainerVerifier", () => {
       exitCode: 7,
     });
   });
+
+  realContainerIt(
+    "runs verification in Docker without mutating the authoritative workspace",
+    async () => {
+      const root = await mkdtemp(
+	path.join(tmpdir(), "safecommit-real-verifier-"),
+      );
+
+      temporaryDirectories.push(root);
+
+      await writeFile(
+	path.join(root, "package.json"),
+	JSON.stringify(
+	  {
+	    scripts: {
+	      test:
+		'node -e "require(\'fs\').writeFileSync(\'verifier-side-effect.txt\', \'temporary\'); console.log(\'real verifier passed\')"',
+	    },
+	  },
+	  null,
+	  2,
+	),
+	"utf8",
+      );
+
+      const verifier = new ContainerVerifier(
+	loadConfig({
+	  NODE_ENV: "test",
+	  RUNTIME_PROVIDER: "container",
+	  CONTAINER_ENGINE: "docker",
+	  CONTAINER_RUNTIME_IMAGE:
+	    "volc-agent-runtime:local",
+	}),
+      );
+
+      const result = await verifier.verify(
+	root,
+	{
+	  tier: "medium",
+	  checks: ["test"],
+	  structuralOnly: false,
+	  failClosedIfUnavailable: false,
+	  reason: "real container smoke test",
+	},
+      );
+
+      expect(result.status).toBe("passed");
+      expect(result.passed).toBe(true);
+
+      expect(result.checks[0]?.output)
+	.toContain("real verifier passed");
+
+      // The verifier writes only to its ephemeral tmpfs copy.
+      // The authoritative Agent workspace must remain untouched.
+      await expect(
+	access(
+	  path.join(
+	    root,
+	    "verifier-side-effect.txt",
+	  ),
+	),
+      ).rejects.toThrow();
+    },
+  );
 });
