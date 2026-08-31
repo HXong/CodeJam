@@ -255,20 +255,6 @@ npm run poc
 
 More local-runtime details are in [docs/LOCAL_POC.md](docs/LOCAL_POC.md).
 
-## Suggested demo scenarios
-
-Use a project that already exposes `test`, `typecheck`, and/or `build` scripts so
-SafeCommit can discover executable verification capabilities.
-
-| Scenario | Example change | Expected evidence |
-| --- | --- | --- |
-| Low | Documentation-only edit such as `README.md` | Structural only, 0 executable checks, accepted |
-| Medium | Ordinary source edit such as `src/index.ts` | One targeted executable check, accepted if it passes |
-| High | Security-sensitive source such as `src/auth/token.ts` | Full available verification; failed check causes rollback |
-
-These are policy examples rather than promises about model-generated file names;
-actual risk is computed from the files the Agent really changes.
-
 ## Validation
 
 Run the normal repository checks:
