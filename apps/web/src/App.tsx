@@ -734,14 +734,6 @@ export default function App() {
                 ) : (
                   messages.map((message) => (
 		    <div key={message.id}>
-		      {message.role === "assistant" &&
-			activeRun?.id === message.runId &&
-			["completed", "failed"].includes(
-			  activeRun.status,
-			) && (
-			  <SafeCommitEvidence run={activeRun}/>
-			)}
-
 		      <article className={"message message-" + message.role}>
 			<div className="message-meta">
 			  <strong>{message.role === "user" ? "You" : selected.name}</strong>
@@ -749,6 +741,14 @@ export default function App() {
 			</div>
 			<div className="message-body">{message.content}</div>
 		      </article>
+
+		      {message.role === "user" && 
+			activeRun?.id === message.runId &&
+			["completed", "failed"].includes(
+			  activeRun.status,
+		      	) && (
+			  <SafeCommitEvidence run={activeRun} />
+			)}
 		    </div>
                   ))
                 )}
