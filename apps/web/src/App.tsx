@@ -35,6 +35,228 @@ function Spinner() {
   return <span className="spinner" aria-label="Loading" />;
 }
 
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1000) {
+    return `${durationMs} ms`;
+  }
+
+  return `${(durationMs / 1000).toFixed(2)} s`;
+}
+
+function SafeCommitEvidence({
+  run,
+}: {
+  run: AgentRun;
+}) {
+  const risk = run.riskAssessment;
+  const plan = run.verificationPlan;
+  const result = run.verificationResult;
+
+  if (!risk || !plan || !result) {
+    return null;
+  }
+
+  const executedChecks = new Map(
+    result.checks.map((check) => [
+      check.check,
+      check,
+    ]),
+  );
+
+  const rolledBack =
+    run.status === "failed" &&
+    run.error?.includes(
+      "workspace rolled back to checkpoint",
+    );
+
+  const outcome =
+    run.status === "completed" && result.passed
+      ? "accepted"
+      : result.status === "blocked"
+        ? "blocked"
+        : result.status === "error"
+          ? "error"
+          : "rejected";
+
+  return (
+    <article
+      className={
+        `safecommit-card safecommit-${risk.level}`
+      }
+    >
+      <div className="safecommit-header">
+        <div>
+          <span className="safecommit-eyebrow">
+            SafeCommit
+          </span>
+
+          <div className="safecommit-risk-row">
+            <strong>
+              {risk.level.toUpperCase()} RISK
+            </strong>
+
+            <span>
+              {risk.score}/100
+            </span>
+          </div>
+        </div>
+
+        <span
+          className={
+            `safecommit-outcome safecommit-outcome-${outcome}`
+          }
+        >
+          {rolledBack
+	    ? "Rolled back"
+	    : outcome === "accepted"
+	      ? "Accepted"
+              : outcome === "blocked"
+                ? "Blocked"
+                : outcome === "error"
+                  ? "Verifier error"
+                  : "Rejected"}
+        </span>
+      </div>
+
+      <div className="safecommit-section">
+        <span className="safecommit-label">
+          Why this risk level
+        </span>
+
+        <ul className="safecommit-reasons">
+          {risk.reasons.map((reason) => (
+            <li key={reason}>
+              {reason}
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {risk.changedFiles.length > 0 && (
+        <div className="safecommit-section">
+          <span className="safecommit-label">
+            Changed files
+          </span>
+
+          <div className="safecommit-files">
+            {risk.changedFiles.map((file) => (
+              <code key={file}>
+                {file}
+              </code>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="safecommit-section">
+        <div className="safecommit-policy-heading">
+          <span className="safecommit-label">
+            Verification
+          </span>
+
+          <span className="safecommit-policy-tier">
+            {plan.structuralOnly
+              ? "Structural only"
+              : plan.tier === "high"
+                ? "Full verification"
+                : "Targeted verification"}
+          </span>
+        </div>
+
+        <p className="safecommit-policy-reason">
+          {plan.reason}
+        </p>
+
+        {plan.checks.length === 0 ? (
+          <div className="safecommit-structural">
+            <span>◇</span>
+
+            <div>
+              <strong>
+                0 executable checks
+              </strong>
+
+              <small>
+                Deterministic structural analysis was
+                sufficient for this change.
+              </small>
+            </div>
+          </div>
+        ) : (
+          <div className="safecommit-checks">
+            {plan.checks.map((check) => {
+              const executed =
+                executedChecks.get(check);
+
+              return (
+                <div
+                  className={
+                    "safecommit-check " +
+                    (executed
+                      ? `safecommit-check-${executed.status}`
+                      : "safecommit-check-not-run")
+                  }
+                  key={check}
+                >
+                  <span className="safecommit-check-icon">
+                    {!executed
+                      ? "○"
+                      : executed.status === "passed"
+                        ? "✓"
+                        : executed.status === "failed"
+                          ? "✕"
+                          : "!"}
+                  </span>
+
+                  <strong>
+                    {check}
+                  </strong>
+
+                  <span>
+                    {executed
+                      ? formatDuration(
+                          executed.durationMs,
+                        )
+                      : "not run"}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div
+        className={
+          `safecommit-result safecommit-result-${outcome}`
+        }
+      >
+        <strong>
+          {outcome === "accepted"
+            ? "Change accepted"
+            : outcome === "blocked"
+              ? "Change blocked"
+              : outcome === "error"
+                ? "Verification could not complete"
+                : "Change rejected"}
+        </strong>
+
+        <span>
+          {rolledBack
+            ? "Workspace restored to the pre-run checkpoint."
+            : outcome === "accepted"
+              ? plan.structuralOnly
+	        ? "Structurally screened change remains in the Agent workspace."
+		: "Verified candidate remains in the Agent workspace."
+              : result.status === "blocked"
+                ? "SafeCommit failed closed because sufficient verification was unavailable."
+                : "SafeCommit did not accept the candidate change."}
+        </span>
+      </div>
+    </article>
+  );
+}
+
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -511,13 +733,23 @@ export default function App() {
                   </div>
                 ) : (
                   messages.map((message) => (
-                    <article className={"message message-" + message.role} key={message.id}>
-                      <div className="message-meta">
-                        <strong>{message.role === "user" ? "You" : selected.name}</strong>
-                        <span>{formatTime(message.createdAt)}</span>
-                      </div>
-                      <div className="message-body">{message.content}</div>
-                    </article>
+		    <div key={message.id}>
+		      {message.role === "assistant" &&
+			activeRun?.id === message.runId &&
+			["completed", "failed"].includes(
+			  activeRun.status,
+			) && (
+			  <SafeCommitEvidence run={activeRun}/>
+			)}
+
+		      <article className={"message message-" + message.role}>
+			<div className="message-meta">
+			  <strong>{message.role === "user" ? "You" : selected.name}</strong>
+			  <span>{formatTime(message.createdAt)}</span>
+			</div>
+			<div className="message-body">{message.content}</div>
+		      </article>
+		    </div>
                   ))
                 )}
                 {activeRun && ["queued", "running"].includes(activeRun.status) && (
@@ -532,7 +764,8 @@ export default function App() {
                     </div>
                   </article>
                 )}
-                {activeRun?.status === "failed" && (
+                {activeRun?.status === "failed" &&
+		  !activeRun.verificationResult && (
                   <article className="run-error">
                     <strong>Run failed</strong>
                     <span>{activeRun.error}</span>

@@ -1,5 +1,51 @@
 export type AgentStatus = "ready" | "busy" | "stopped" | "error";
 export type RunStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type ChangeRiskLevel = "low" | "medium" | "high";
+export type VerificationCheck = "typecheck" | "test" | "build";
+export type VerificationStatus = "passed" | "failed" | "skipped" | "blocked" | "error";
+
+export interface ChangeRiskFeatures {
+  docsOnly: boolean;
+  sourceChanged: boolean;
+  testsChanged: boolean;
+  dependencyManifestChanged: boolean;
+  securitySensitiveChanged: boolean;
+  persistenceSensitiveChanged: boolean;
+  infrastructureChanged: boolean;
+  configurationChanged: boolean;
+  largeChangeSet: boolean;
+}
+
+export interface ChangeRiskAssessment {
+  level: ChangeRiskLevel;
+  score: number;
+  reasons: string[];
+  changedFiles: string[];
+  features: ChangeRiskFeatures;
+}
+
+export interface VerificationPlan {
+  tier: ChangeRiskLevel;
+  checks: VerificationCheck[];
+  structuralOnly: boolean;
+  failClosedIfUnavailable: boolean;
+  reason: string;
+}
+
+export interface VerificationCheckResult {
+  check: VerificationCheck;
+  status: "passed" | "failed" | "error";
+  exitCode: number | null;
+  durationMs: number;
+  output: string;
+}
+
+export interface VerificationResult {
+  status: VerificationStatus;
+  passed: boolean;
+  checks: VerificationCheckResult[];
+  totalDurationMs: number;
+}
 
 export interface Agent {
   id: string;
@@ -35,6 +81,12 @@ export interface AgentRun {
     cachedInputTokens?: number;
     outputTokens?: number;
   } | null;
+  riskAssessment?: ChangeRiskAssessment | null;
+  verificationPlan?: VerificationPlan | null;
+  verificationResult?: VerificationResult | null;
+
+  startedAt: string | null;
+  completedAt: string | null;
   createdAt: string;
 }
 
